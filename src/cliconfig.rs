@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use crate::execute::Mode;
 use crate::network_config::NtpAssociation;
+use crate::cryptocommands::{DynamicMapEntry,IPSecLifetime, CryptoMapEntry};
 
 
 /// Represents the configuration for the CLI application.
@@ -37,7 +38,15 @@ pub struct CliConfig {
     pub encrypted_secret: Option<String>,          
     pub password_encryption: bool,
     pub domain_name: Option<String>,
-    pub last_written: Option<String>,     
+    pub last_written: Option<String>, 
+    pub crypto_keys: HashMap<String, String>,
+    pub certificates: HashMap<String, String>,  
+    pub crypto_dynamic_maps: HashMap<String, DynamicMapEntry>,
+    pub crypto_engine_accelerator: Option<u32>, 
+    pub crypto_ipsec_lifetime: IPSecLifetime,
+    pub crypto_transform_sets: HashMap<String, Vec<String>>,
+    pub crypto_maps: HashMap<String, CryptoMapEntry>,
+    pub crypto_local_addresses: HashMap<String, String>,
   
 }
 
@@ -79,6 +88,15 @@ impl Default for CliConfig {
             password_encryption: false, 
             domain_name: None,
             last_written: None,
+            crypto_keys: HashMap::new(),
+            certificates: HashMap::new(),
+            crypto_dynamic_maps: HashMap::new(),
+            crypto_engine_accelerator: None,
+            crypto_ipsec_lifetime: IPSecLifetime::default(),
+            crypto_transform_sets: HashMap::new(),
+            crypto_maps: HashMap::new(),
+            crypto_local_addresses: HashMap::new(),
+            
             
         }
     }

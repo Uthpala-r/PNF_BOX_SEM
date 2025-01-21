@@ -16,7 +16,8 @@ use crate::execute::Mode;
 use crate::clock_settings::{handle_clock_set, parse_clock_set_input, handle_show_clock, handle_show_uptime};
 use crate::network_config::{calculate_broadcast, STATUS_MAP, IFCONFIG_STATE, IP_ADDRESS_STATE, ROUTE_TABLE, OSPF_CONFIG, ACL_STORE, encrypt_password, PASSWORD_STORAGE, set_enable_password, set_enable_secret};
 use crate::network_config::{InterfaceConfig, OSPFConfig, AclEntry, AccessControlList, NtpAssociation};
-
+use crate::cryptocommands::{generate_crypto_key, delete_crypto_key, import_crypto_key, generate_self_signed_certificate, generate_certificate_request, import_certificate, extract_subject_from_cert, extract_issuer_from_cert};
+use crate::cryptocommands::{DynamicMapEntry, CryptoMapEntry};
 
 /// Builds and returns a `HashMap` of available commands, each represented by a `Command` structure.
 /// 
@@ -104,6 +105,9 @@ use crate::network_config::{InterfaceConfig, OSPFConfig, AclEntry, AccessControl
 /// Each `Command` struct contains the `name`, `description`, `suggestions`, and an `execute` function.
 pub fn build_command_registry() -> HashMap<&'static str, Command> {
     let mut commands = HashMap::new();
+
+
+    //Common Commands
 
     commands.insert("enable", Command {
         name: "enable",
@@ -532,7 +536,402 @@ pub fn build_command_registry() -> HashMap<&'static str, Command> {
             },
         },
     );
+    
+    commands.insert(
+        "write",
+        Command {
+            name: "write memory",
+            description: "Save the running configuration to the startup configuration",
+            suggestions: Some(vec!["memory"]),
+            suggestions1: Some(vec!["memory"]),
+            options: None,
+            execute: |args, context, _| {
+                if matches!(context.current_mode, Mode::PrivilegedMode | Mode::ConfigMode | Mode::InterfaceMode) {
+                    if args.len() == 1 && args[0] == "memory" {
+                        // Save the running configuration to the startup configuration
+                        let running_config = get_running_config(context);
+                        context.config.startup_config = Some(running_config.clone());
+        
+                        // Update the last written timestamp
+                        context.config.last_written = Some(chrono::Local::now().to_string());
+        
+                        println!("Configuration saved successfully.");
+                        Ok(())
+                    } else {
+                        Err("Invalid arguments provided to 'write memory'. This command does not accept additional arguments.".into())
+                    }
+                } else {
+                    Err("The 'write memory' command is only available in Privileged EXEC mode.".into())
+                }
+            },
+        },
+    );
+    
 
+    commands.insert(
+        "copy",
+        Command {
+            name: "copy",
+            description: "Copy running configuration",
+            suggestions: Some(vec!["running-config"]),
+            suggestions1: Some(vec!["running-config"]),
+            options: Some(vec!["startup-config"]),
+            execute: |args, context, _| {
+                if !matches!(context.current_mode, Mode::PrivilegedMode | Mode::ConfigMode | Mode::InterfaceMode) {
+                    return Err("The 'copy' command is only available in Privileged EXEC mode, Config mode and interface mode".into());
+                }
+
+                // Handle both full and abbreviated versions of 'running-config'
+                let source = args[0];
+                if !source.starts_with("run") {
+                    return Err("Invalid source. Use 'running-config'".into());
+                }
+
+                else if args[1] == "startup-config"{
+                    
+                    // Save the running configuration to the startup configuration
+                    let running_config = get_running_config(context);
+                    context.config.startup_config = Some(running_config.clone());
+        
+                    // Update the last written timestamp
+                    context.config.last_written = Some(chrono::Local::now().to_string());
+        
+                    println!("Configuration saved successfully.");
+                    Ok(())
+                    
+                }
+
+                else {
+                    let file_name = args[1];
+                    let running_config = get_running_config(context); 
+                    let file_path = Path::new(file_name);
+                    
+                    match File::create(file_path) {
+                        Ok(mut file) => {
+                            if let Err(err) = file.write_all(running_config.as_bytes()) {
+                                eprintln!("Error writing to the file: {}", err);
+                                return Err(err.to_string());
+                            }
+                            println!("Running configuration copied to {}", file_name);
+                            Ok(())
+                        }
+                        Err(err) => {
+                            eprintln!("Error creating the file: {}", err);
+                            Err(err.to_string())
+                        }
+                    }
+                }
+            },
+        },
+    );
+
+    commands.insert(
+        "help",
+        Command {
+            name: "help",
+            description: "Display available commands for current mode",
+            suggestions: None,
+            suggestions1: None,
+            options: None,
+            execute: |args, context, _| {
+                println!("\n ");
+                println!(r#"Help may be requested at any point in a command by entering
+a question mark '?'. If nothing matches, the help list will
+be empty and you must backup until entering a '?' shows the
+available options.
+Two styles of help are provided:
+1. Full help is available when you are ready to enter a
+   command argument (e.g. 'show ?') and describes each possible
+   argument.
+2. Partial help is provided when an abbreviated argument is entered
+   and you want to know what arguments match the input
+   (e.g. 'show pr?'.
+"#);
+                println!("\nAvailable commands");
+                println!("\n ");
+                
+                if matches!(context.current_mode, Mode::UserMode) {
+                    println!("enable            - Enter privileged mode");
+                    println!("exit              - Exit current mode");
+                    println!("ping              - Send ICMP echo request");
+                    println!("help              - Display available commands");
+                    println!("reload            - Reload the system");
+                    println!("clear             - Clear the terminal");
+                    println!("show              - Some available show commands are present. To view enter 'show ?'");
+                }
+                else if matches!(context.current_mode, Mode::PrivilegedMode) {
+                    println!("configure         - Enter configuration mode");
+                    println!("exit              - Exit to user mode");
+                    println!("help              - Display available commands");
+                    println!("write             - Save the configuration");
+                    println!("copy              - Copy configuration files");
+                    println!("clock             - Manage system clock");
+                    println!("clear ip ospf process - Clear all the ospf processes");
+                    println!("ping              - Send ICMP echo request");
+                    println!("show              - Some available show commands are present. To view enter 'show ?'");
+                    println!("ifconfig          - Display interface configuration");
+                    println!("reload            - Reload the system");
+                    println!("clear             - Clear the terminal");
+                    println!("debug             - Debug the availbale processes");
+                    println!("undebug           - Undebug the availbale processes");
+                }
+                else if matches!(context.current_mode, Mode::ConfigMode) {
+                    println!("hostname          - Set system hostname");
+                    println!("interface         - Configure interface");
+                    println!("exit              - Exit to privileged mode");
+                    println!("tunnel            - Configure tunnel interface");
+                    println!("virtual-template  - Configure virtual template");
+                    println!("help              - Display available commands");
+                    println!("write             - Save the configuration");
+                    println!("ping              - Send ICMP echo request");
+                    println!("vlan              - Configure VLAN");
+                    println!("access-list       - Configure access list");
+                    println!("router            - Configure routing protocol");
+                    println!("enable            - Enter privileged mode");
+                    println!("ip route          - Configure static routes");
+                    println!("ip domain-name    - Configure DNS domain name");
+                    println!("ip access-list    - Configure IP access list");
+                    println!("service           - Configure system services");
+                    println!("set               - Set system parameters");
+                    println!("ifconfig          - Configure interface");
+                    println!("ntp               - Configure NTP");
+                    println!("crypto            - Configure encryption");
+                    println!("reload            - Reload the system");
+                    println!("clear             - Clear the terminal");
+                }
+                else if matches!(context.current_mode, Mode::InterfaceMode) {
+                    println!("exit              - Exit to config mode");
+                    println!("shutdown          - Shutdown interface");
+                    println!("no                - Negate a command");
+                    println!("switchport        - Configure switching parameters");
+                    println!("help              - Display available commands");
+                    println!("write             - Save the configuration");
+                    println!("interface         - Select another interface");
+                    println!("ip address        - Set IP address");
+                    println!("ip ospf           - Configure OSPF protocol");
+                    println!("reload            - Reload the system");
+                    println!("clear             - Clear the terminal");
+                }
+                else if matches!(context.current_mode, Mode::VlanMode) {
+                    println!("name              - Set VLAN name");
+                    println!("exit              - Exit to config mode");
+                    println!("state             - Set VLAN state");
+                    println!("vlan              - Configure VLAN parameters");
+                    println!("reload            - Reload the system");
+                    println!("clear             - Clear the terminal");
+                    println!("help              - Display available commands");
+                }
+                else if matches!(context.current_mode, Mode::RouterConfigMode) {
+                    println!("network           - Configure network");
+                    println!("exit              - Exit to config mode");
+                    println!("neighbor          - Configure BGP neighbor");
+                    println!("area              - Configure OSPF area");
+                    println!("passive-interface - Configure passive interface");
+                    println!("distance          - Configure administrative distance");
+                    println!("default-information - Configure default route distribution");
+                    println!("router-id         - Configure router ID");
+                    println!("reload            - Reload the system");
+                    println!("clear             - Clear the terminal");
+                    println!("help              - Display available commands");
+                }
+                else if matches!(context.current_mode, Mode::ConfigStdNaclMode(_)) {
+                    println!("deny              - Deny specific traffic");
+                    println!("permit            - Permit specific traffic");
+                    println!("exit              - Exit to config mode");
+                    println!("ip access-list    - Configure IP access list");
+                    println!("reload            - Reload the system");
+                    println!("clear             - Clear the terminal");
+                    println!("help              - Display available commands");
+                }
+                else if matches!(context.current_mode, Mode::ConfigExtNaclMode(_)) {
+                    println!("deny              - Deny specific traffic");
+                    println!("permit            - Permit specific traffic");
+                    println!("exit              - Exit to config mode");
+                    println!("ip access-list    - Configure IP access list");
+                    println!("reload            - Reload the system");
+                    println!("clear             - Clear the terminal");
+                    println!("help              - Display available commands");
+                }
+                println!("\n ");
+                Ok(())
+            }
+        },
+    );
+    
+
+    commands.insert(
+        "clock",
+        Command {
+            name: "clock set",
+            description: "Change the clock date and time",
+            suggestions: Some(vec!["set"]),
+            suggestions1: Some(vec!["set"]),
+            options: Some(vec!["<hh:mm:ss>      - Enter the time in this specified format",
+                "<day>      - Enter the day '1-31'",
+                "<month>    - Enter a valid month",
+                "<year>     - Enter the year"]),
+            execute: |args, context, clock| {
+                if matches!(context.current_mode, Mode::PrivilegedMode) {
+                    if args.len() > 1 && args[0] == "set" {   
+                        if let Some(clock) = clock {
+
+                            let input = args.join(" ");
+            
+                            match parse_clock_set_input(&input) {
+                                Ok((time, day, month, year)) => {
+                        
+                                    handle_clock_set(time, day, month, year, clock);
+                                    Ok(())
+                                }
+                                Err(err) => Err(err), 
+                            }
+                        } else {
+                            Err("Clock functionality is unavailable.".to_string())
+                        }
+                    } else {
+                        Err("Correct Usage of 'clock set' command is 'clock set <hh:mm:ss> <day> <month> <year>'.".into())
+                    }
+                }
+                else {
+                    Err("The 'clock set' command is only available in Privileged EXEC mode.".into())
+                }
+            },
+        },
+    );
+
+    commands.insert("ntp", Command {
+        name: "ntp",
+        description: "NTP configuration commands",
+        suggestions: Some(vec!["server", "master", "authenticate", "authentication-key", "trusted-key"]),
+        suggestions1: Some(vec!["server", "master", "authenticate", "authentication-key", "trusted-key"]),
+        options: None,
+        execute: |args, context, _| {
+            if !matches!(context.current_mode, Mode::ConfigMode) {
+                return Err("NTP commands are only available in configuration mode.".into());
+            }
+    
+            if args.is_empty() {
+                return Err("Subcommand required. Available subcommands: server, master, authenticate, authentication-key, trusted-key".into());
+            }
+    
+            match &args[0][..] {
+                "server" => {
+                    if args.len() == 2 {
+                        let ip_address = args[1].to_string();
+                        if ip_address.parse::<Ipv4Addr>().is_ok() {
+                            context.ntp_servers.insert(ip_address.clone());
+                            // Assuming once the server is configured, we add it to NTP associations
+                            let association = NtpAssociation {
+                                address: ip_address.clone(),
+                                ref_clock: ".INIT.".to_string(),
+                                st: 16,
+                                when: "-".to_string(),
+                                poll: 64,
+                                reach: 0,
+                                delay: 0.0,
+                                offset: 0.0,
+                                disp: 0.01,
+                            };
+                            context.ntp_associations.push(association); // Adding the new server to the list
+                            println!("NTP server {} configured.", ip_address);
+                            Ok(())
+                        } else {
+                            Err("Invalid IP address format.".into())
+                        }
+                    } else {
+                        Err("Invalid arguments. Usage: ntp server {ip-address}".into())
+                    }
+                },
+                "master" => {
+                    context.ntp_master = true;
+                    println!("Device configured as NTP master.");
+                    Ok(())
+                },
+                "authenticate" => {
+                    if args.len() == 1 {
+                        context.ntp_authentication_enabled = !context.ntp_authentication_enabled;
+                        let status = if context.ntp_authentication_enabled {
+                            "enabled"
+                        } else {
+                            "disabled"
+                        };
+                        println!("NTP authentication {}", status);
+                        Ok(())
+                    } else {
+                        Err("Invalid arguments. Use 'ntp authenticate'.".into())
+                    }
+                },
+                "authentication-key" => {
+                    if args.len() == 4 && args[2] == "md5" {
+                        if let Ok(key_number) = args[1].parse::<u32>() {
+                            let md5_key = args[3].to_string();
+                            context.ntp_authentication_keys.insert(key_number, md5_key.clone());
+                            println!("NTP authentication key {} configured with MD5 key: {}", key_number, md5_key);
+                            Ok(())
+                        } else {
+                            Err("Invalid key number. Must be a positive integer.".into())
+                        }
+                    } else {
+                        Err("Invalid arguments. Use 'ntp authentication-key <key-number> md5 <key-value>'.".into())
+                    }
+                },
+                "trusted-key" => {
+                    if args.len() == 2 {
+                        if let Ok(key_number) = args[1].parse::<u32>() {
+                            context.ntp_trusted_keys.insert(key_number);
+                            println!("NTP trusted key {} configured.", key_number);
+                            Ok(())
+                        } else {
+                            Err("Invalid key number. Must be a positive integer.".into())
+                        }
+                    } else {
+                        Err("Invalid arguments. Use 'ntp trusted-key <key-number>'.".into())
+                    }
+                },
+                _ => Err("Invalid NTP subcommand. Available subcommands: server, master, authenticate, authentication-key, trusted-key".into())
+            }
+        }
+    });
+  
+
+    commands.insert("ping", Command {
+        name: "ping",
+        description: "Ping a specific IP address to check reachability",
+        suggestions: None,
+        suggestions1: None,
+        options: Some(vec!["<ip-address>    - Enter the ip-address"]),
+        execute: |args, _context, _| {
+            if args.len() == 1 {
+                let ip: String = args[0].to_string();
+                let route_table = ROUTE_TABLE.lock().unwrap();
+    
+                if route_table.contains_key(&ip) {
+                    println!("Pinging {} with 32 bytes of data:", ip);
+                    for _ in 0..4 {
+                        println!("Reply from {}: bytes=32 time<1ms TTL=128", ip);
+                    }
+                    println!("\nPing statistics for {}:", ip);
+                    println!("    Packets: Sent = 4, Received = 4, Lost = 0 (0% loss),");
+                    println!("Approximate round trip times in milli-seconds:");
+                    println!("    Minimum = 0ms, Maximum = 1ms, Average = 0ms");
+                    Ok(())
+                } else {
+                    println!("Pinging {} with 32 bytes of data:", ip);
+                    for _ in 0..4 {
+                        println!("Request timed out.");
+                    }
+                    println!("\nPing statistics for {}:", ip);
+                    println!("    Packets: Sent = 4, Received = 0, Lost = 4 (100% loss),");
+                    Err(format!("IP address {} is not reachable.", ip).into())
+                }
+            } else {
+                Err("Invalid syntax. Usage: ping <ip>".into())
+            }
+        },
+    });
+    
+    //Show commands
+    
     commands.insert(
         "show",
         Command {
@@ -550,7 +949,12 @@ pub fn build_command_registry() -> HashMap<&'static str, Command> {
                 "vlan",
                 "interfaces",
                 "uptime",
-                "login"
+                "login",
+                "crypto key",
+                "crypto certificate",
+                "crypto dynamic-map",
+                "crypto map",
+                "crypto engine"
             ]),
             suggestions1: Some(vec![
                 "running-config",
@@ -564,7 +968,12 @@ pub fn build_command_registry() -> HashMap<&'static str, Command> {
                 "vlan",
                 "interfaces",
                 "uptime",
-                "login"
+                "login",
+                "crypto key",
+                "crypto certificate",
+                "crypto dynamic-map",
+                "crypto map",
+                "crypto engine"
             ]),
             options: None,
             execute: |args, context, clock| {
@@ -933,6 +1342,86 @@ pub fn build_command_registry() -> HashMap<&'static str, Command> {
                             }
                             
                         },
+                        Some(&"crypto") => {
+                            if args.len() < 2 {
+                                return Err("Specify 'key' or 'certificate' after 'crypto'.".to_string());
+                            }
+                            match args[1] {
+                                "key" => {
+                                    if context.config.crypto_keys.is_empty() {
+                                        println!("No crypto keys found.");
+                                        Ok(())
+                                    } else {
+                                        println!("Crypto keys:");
+                                        println!("------------");
+                                        for (key_name, key_data) in &context.config.crypto_keys {
+                                            println!("Key: {}", key_name);
+                                            // Show key type by parsing the key data
+                                            if key_data.contains("BEGIN RSA") {
+                                                println!("Type: RSA");
+                                            } else if key_data.contains("BEGIN DSA") {
+                                                println!("Type: DSA");
+                                            }
+                                            println!("Usage: General Purpose");
+                                            println!("------------");
+                                        }
+                                        Ok(())
+                                    }
+                                },
+                                "certificate" => {
+                                    if context.config.certificates.is_empty() {
+                                        println!("No certificates found.");
+                                        Ok(())
+                                    } else {
+                                        println!("Certificates:");
+                                        println!("-------------");
+                                        for (cert_name, cert_data) in &context.config.certificates {
+                                            println!("Certificate: {}", cert_name);
+                                            // Parse and display certificate details
+                                            if let Some(subject) = extract_subject_from_cert(cert_data) {
+                                                println!("Subject: {}", subject);
+                                            }
+                                            if let Some(issuer) = extract_issuer_from_cert(cert_data) {
+                                                println!("Issuer: {}", issuer);
+                                            }
+                                            println!("Status: Active");
+                                            println!("-------------");
+                                        }
+                                        Ok(())
+                                    }
+                                },
+                                "dynamic-map" => {
+                                    println!("Crypto dynamic-map entries:");
+                                    for (name, entry) in &context.config.crypto_dynamic_maps {
+                                        println!("Dynamic-map '{}' sequence {}", entry.name, entry.seq_num);
+                                    }
+                                    Ok(())
+                                },
+                                "map" => {
+                                    println!("Crypto map entries:");
+                                    for (name, entry) in &context.config.crypto_maps {
+                                        println!("Crypto map '{}' sequence {}", entry.name, entry.seq_num);
+                                        if let Some(interface_id) = &entry.interface_id {
+                                            println!("  Interface: {}", interface_id);
+                                        }
+                                        if let Some(local_addr) = context.config.crypto_local_addresses.get(&entry.name) {
+                                            println!("  Local address: {}", local_addr);
+                                        }
+                                    }
+                                    Ok(())
+                                },
+                                "engine" => {
+                                    println!("Crypto engine configuration:");
+                                    if let Some(slot) = context.config.crypto_engine_accelerator {
+                                        println!("Hardware crypto accelerator configured in slot {}", slot);
+                                    } else {
+                                        println!("No hardware crypto accelerator configured");
+                                    }
+                                    Ok(())
+                                },
+                                _ => Err("Invalid crypto show command. Use 'show crypto key' or 'show crypto certificate'.".to_string())
+                            }
+                        },
                         
                         _ => Ok(()),
                     }
@@ -944,268 +1433,9 @@ pub fn build_command_registry() -> HashMap<&'static str, Command> {
             },
         },
     );
-    
-    commands.insert(
-        "write",
-        Command {
-            name: "write memory",
-            description: "Save the running configuration to the startup configuration",
-            suggestions: Some(vec!["memory"]),
-            suggestions1: Some(vec!["memory"]),
-            options: None,
-            execute: |args, context, _| {
-                if matches!(context.current_mode, Mode::PrivilegedMode | Mode::ConfigMode | Mode::InterfaceMode) {
-                    if args.len() == 1 && args[0] == "memory" {
-                        // Save the running configuration to the startup configuration
-                        let running_config = get_running_config(context);
-                        context.config.startup_config = Some(running_config.clone());
-        
-                        // Update the last written timestamp
-                        context.config.last_written = Some(chrono::Local::now().to_string());
-        
-                        println!("Configuration saved successfully.");
-                        Ok(())
-                    } else {
-                        Err("Invalid arguments provided to 'write memory'. This command does not accept additional arguments.".into())
-                    }
-                } else {
-                    Err("The 'write memory' command is only available in Privileged EXEC mode.".into())
-                }
-            },
-        },
-    );
-    
 
-    commands.insert(
-        "copy",
-        Command {
-            name: "copy",
-            description: "Copy running configuration",
-            suggestions: Some(vec!["running-config"]),
-            suggestions1: Some(vec!["running-config"]),
-            options: Some(vec!["startup-config"]),
-            execute: |args, context, _| {
-                if !matches!(context.current_mode, Mode::PrivilegedMode | Mode::ConfigMode | Mode::InterfaceMode) {
-                    return Err("The 'copy' command is only available in Privileged EXEC mode, Config mode and interface mode".into());
-                }
 
-                // Handle both full and abbreviated versions of 'running-config'
-                let source = args[0];
-                if !source.starts_with("run") {
-                    return Err("Invalid source. Use 'running-config'".into());
-                }
-
-                else if args[1] == "startup-config"{
-                    
-                    // Save the running configuration to the startup configuration
-                    let running_config = get_running_config(context);
-                    context.config.startup_config = Some(running_config.clone());
-        
-                    // Update the last written timestamp
-                    context.config.last_written = Some(chrono::Local::now().to_string());
-        
-                    println!("Configuration saved successfully.");
-                    Ok(())
-                    
-                }
-
-                else {
-                    let file_name = args[1];
-                    let running_config = get_running_config(context); 
-                    let file_path = Path::new(file_name);
-                    
-                    match File::create(file_path) {
-                        Ok(mut file) => {
-                            if let Err(err) = file.write_all(running_config.as_bytes()) {
-                                eprintln!("Error writing to the file: {}", err);
-                                return Err(err.to_string());
-                            }
-                            println!("Running configuration copied to {}", file_name);
-                            Ok(())
-                        }
-                        Err(err) => {
-                            eprintln!("Error creating the file: {}", err);
-                            Err(err.to_string())
-                        }
-                    }
-                }
-            },
-        },
-    );
-
-    commands.insert(
-        "help",
-        Command {
-            name: "help",
-            description: "Display available commands for current mode",
-            suggestions: None,
-            suggestions1: None,
-            options: None,
-            execute: |args, context, _| {
-                println!("\n ");
-                println!(r#"Help may be requested at any point in a command by entering
-a question mark '?'. If nothing matches, the help list will
-be empty and you must backup until entering a '?' shows the
-available options.
-Two styles of help are provided:
-1. Full help is available when you are ready to enter a
-   command argument (e.g. 'show ?') and describes each possible
-   argument.
-2. Partial help is provided when an abbreviated argument is entered
-   and you want to know what arguments match the input
-   (e.g. 'show pr?'.
-"#);
-                println!("\nAvailable commands");
-                println!("\n ");
-                
-                if matches!(context.current_mode, Mode::UserMode) {
-                    println!("enable            - Enter privileged mode");
-                    println!("exit              - Exit current mode");
-                    println!("ping              - Send ICMP echo request");
-                    println!("help              - Display available commands");
-                    println!("reload            - Reload the system");
-                    println!("clear             - Clear the terminal");
-                    println!("show              - Some available show commands are present. To view enter 'show ?'");
-                }
-                else if matches!(context.current_mode, Mode::PrivilegedMode) {
-                    println!("configure         - Enter configuration mode");
-                    println!("exit              - Exit to user mode");
-                    println!("help              - Display available commands");
-                    println!("write             - Save the configuration");
-                    println!("copy              - Copy configuration files");
-                    println!("clock             - Manage system clock");
-                    println!("clear ip ospf process - Clear all the ospf processes");
-                    println!("ping              - Send ICMP echo request");
-                    println!("show              - Some available show commands are present. To view enter 'show ?'");
-                    println!("ifconfig          - Display interface configuration");
-                    println!("reload            - Reload the system");
-                    println!("clear             - Clear the terminal");
-                    println!("debug             - Debug the availbale processes");
-                    println!("undebug           - Undebug the availbale processes");
-                }
-                else if matches!(context.current_mode, Mode::ConfigMode) {
-                    println!("hostname          - Set system hostname");
-                    println!("interface         - Configure interface");
-                    println!("exit              - Exit to privileged mode");
-                    println!("tunnel            - Configure tunnel interface");
-                    println!("virtual-template  - Configure virtual template");
-                    println!("help              - Display available commands");
-                    println!("write             - Save the configuration");
-                    println!("ping              - Send ICMP echo request");
-                    println!("vlan              - Configure VLAN");
-                    println!("access-list       - Configure access list");
-                    println!("router            - Configure routing protocol");
-                    println!("enable            - Enter privileged mode");
-                    println!("ip route          - Configure static routes");
-                    println!("ip domain-name    - Configure DNS domain name");
-                    println!("ip access-list    - Configure IP access list");
-                    println!("service           - Configure system services");
-                    println!("set               - Set system parameters");
-                    println!("ifconfig          - Configure interface");
-                    println!("ntp               - Configure NTP");
-                    println!("crypto            - Configure encryption");
-                    println!("reload            - Reload the system");
-                    println!("clear             - Clear the terminal");
-                }
-                else if matches!(context.current_mode, Mode::InterfaceMode) {
-                    println!("exit              - Exit to config mode");
-                    println!("shutdown          - Shutdown interface");
-                    println!("no                - Negate a command");
-                    println!("switchport        - Configure switching parameters");
-                    println!("help              - Display available commands");
-                    println!("write             - Save the configuration");
-                    println!("interface         - Select another interface");
-                    println!("ip address        - Set IP address");
-                    println!("ip ospf           - Configure OSPF protocol");
-                    println!("reload            - Reload the system");
-                    println!("clear             - Clear the terminal");
-                }
-                else if matches!(context.current_mode, Mode::VlanMode) {
-                    println!("name              - Set VLAN name");
-                    println!("exit              - Exit to config mode");
-                    println!("state             - Set VLAN state");
-                    println!("vlan              - Configure VLAN parameters");
-                    println!("reload            - Reload the system");
-                    println!("clear             - Clear the terminal");
-                    println!("help              - Display available commands");
-                }
-                else if matches!(context.current_mode, Mode::RouterConfigMode) {
-                    println!("network           - Configure network");
-                    println!("exit              - Exit to config mode");
-                    println!("neighbor          - Configure BGP neighbor");
-                    println!("area              - Configure OSPF area");
-                    println!("passive-interface - Configure passive interface");
-                    println!("distance          - Configure administrative distance");
-                    println!("default-information - Configure default route distribution");
-                    println!("router-id         - Configure router ID");
-                    println!("reload            - Reload the system");
-                    println!("clear             - Clear the terminal");
-                    println!("help              - Display available commands");
-                }
-                else if matches!(context.current_mode, Mode::ConfigStdNaclMode(_)) {
-                    println!("deny              - Deny specific traffic");
-                    println!("permit            - Permit specific traffic");
-                    println!("exit              - Exit to config mode");
-                    println!("ip access-list    - Configure IP access list");
-                    println!("reload            - Reload the system");
-                    println!("clear             - Clear the terminal");
-                    println!("help              - Display available commands");
-                }
-                else if matches!(context.current_mode, Mode::ConfigExtNaclMode(_)) {
-                    println!("deny              - Deny specific traffic");
-                    println!("permit            - Permit specific traffic");
-                    println!("exit              - Exit to config mode");
-                    println!("ip access-list    - Configure IP access list");
-                    println!("reload            - Reload the system");
-                    println!("clear             - Clear the terminal");
-                    println!("help              - Display available commands");
-                }
-                println!("\n ");
-                Ok(())
-            }
-        },
-    );
-    
-
-    commands.insert(
-        "clock",
-        Command {
-            name: "clock set",
-            description: "Change the clock date and time",
-            suggestions: Some(vec!["set"]),
-            suggestions1: Some(vec!["set"]),
-            options: Some(vec!["<hh:mm:ss>      - Enter the time in this specified format",
-                "<day>      - Enter the day '1-31'",
-                "<month>    - Enter a valid month",
-                "<year>     - Enter the year"]),
-            execute: |args, context, clock| {
-                if matches!(context.current_mode, Mode::PrivilegedMode) {
-                    if args.len() > 1 && args[0] == "set" {   
-                        if let Some(clock) = clock {
-
-                            let input = args.join(" ");
-            
-                            match parse_clock_set_input(&input) {
-                                Ok((time, day, month, year)) => {
-                        
-                                    handle_clock_set(time, day, month, year, clock);
-                                    Ok(())
-                                }
-                                Err(err) => Err(err), 
-                            }
-                        } else {
-                            Err("Clock functionality is unavailable.".to_string())
-                        }
-                    } else {
-                        Err("Correct Usage of 'clock set' command is 'clock set <hh:mm:ss> <day> <month> <year>'.".into())
-                    }
-                }
-                else {
-                    Err("The 'clock set' command is only available in Privileged EXEC mode.".into())
-                }
-            },
-        },
-    );
+    // interface Commands
     
     commands.insert(
         "ip",
@@ -1550,9 +1780,13 @@ Two styles of help are provided:
         "no",
         Command {
             name: "no shutdown",
-            description: "Enable the selected network interface.",
-            suggestions: Some(vec!["shutdown", "ntp"]),
-            suggestions1: Some(vec!["shutdown", "ntp"]),
+            description: "Negate a command or set its defaults",
+            suggestions: Some(vec!["shutdown", "ntp", "crypto dynamic-map", "crypto engine accelerator",
+                "crypto ipsec security-association lifetime", "crypto ipsec transform-set",
+                "crypto map"]),
+            suggestions1: Some(vec!["shutdown", "ntp", "crypto dynamic-map", "crypto engine accelerator",
+                "crypto ipsec security-association lifetime", "crypto ipsec transform-set",
+                "crypto map"]),
             options: None,
             execute: |args, context, _| {
                 if args.len() == 1 && args[0] == "shutdown" {
@@ -1599,7 +1833,103 @@ Two styles of help are provided:
                     } else {
                         Err("The 'no ntp server' command is only available in configuration mode.".into())
                     }
-                } else {
+                } else if args[0] == "crypto" {
+                    if matches!(context.current_mode, Mode::ConfigMode) {
+                        if args.len() < 2 {
+                            return Err("Crypto command to negate required".into());
+                        }
+        
+                        match args[1] {
+                            "dynamic-map" => {
+                                if args.len() < 3 {
+                                    return Err("Dynamic map name required".into());
+                                }
+                                let name = args[2].to_string();
+                                if context.config.crypto_dynamic_maps.remove(&name).is_some() {
+                                    println!("Removed dynamic map '{}'", name);
+                                    Ok(())
+                                } else {
+                                    Err("Dynamic map not found".into())
+                                }
+                            },
+        
+                            "engine" => {
+                                if args.get(2) == Some(&"accelerator") {
+                                    context.config.crypto_engine_accelerator = None;
+                                    println!("Disabled IPSec accelerator");
+                                    Ok(())
+                                } else {
+                                    Err("Invalid engine command to negate".into())
+                                }
+                            },
+        
+                            "ipsec" => {
+                                match args.get(2).map(|s| *s) {
+                                    Some("security-association") => {
+                                        if args.len() < 5 || args[3] != "lifetime" {
+                                            return Err("Usage: no crypto ipsec security-association lifetime {seconds | kilobytes}".into());
+                                        }
+                                        match args[4] {
+                                            "seconds" => {
+                                                context.config.crypto_ipsec_lifetime.seconds = None;
+                                                println!("Reset IPSec security association lifetime seconds to default");
+                                                return Ok(())
+                                            },
+                                            "kilobytes" => {
+                                                context.config.crypto_ipsec_lifetime.kilobytes = None;
+                                                println!("Reset IPSec security association lifetime kilobytes to default");
+                                                return Ok(())
+                                            },
+                                            _ => return Err("Invalid lifetime parameter".into())
+                                        }
+                                        Ok(())
+                                    },
+        
+                                    Some("transform-set") => {
+                                        if args.len() < 4 {
+                                            return Err("Transform set name required".into());
+                                        }
+                                        let name = args[3].to_string();
+                                        if context.config.crypto_transform_sets.remove(&name).is_some() {
+                                            println!("Removed transform set '{}'", name);
+                                            Ok(())
+                                        } else {
+                                            Err("Transform set not found".into())
+                                        }
+                                    },
+                                    _ => Err("Invalid ipsec command to negate".into())
+                                }
+                            },
+        
+                            "map" => {
+                                if args.len() < 3 {
+                                    return Err("Map name required".into());
+                                }
+                                let name = args[2].to_string();
+                                if args.get(3) == Some(&"local-address") {
+                                    if context.config.crypto_local_addresses.remove(&name).is_some() {
+                                        println!("Removed local address for crypto map '{}'", name);
+                                        Ok(())
+                                    } else {
+                                        Err("Crypto map local address not found".into())
+                                    }
+                                } else {
+                                    if context.config.crypto_maps.remove(&name).is_some() {
+                                        println!("Removed crypto map '{}'", name);
+                                        Ok(())
+                                    } else {
+                                        Err("Crypto map not found".into())
+                                    }
+                                }
+                            },
+        
+                            _ => Err("Invalid crypto command to negate".into())
+                        }
+                    } else {
+                        Err("The 'no crypto' commanda are only available in Global Configuration mode.".into())
+                    }
+                }
+                else {
                     Err("Invalid arguments provided to 'no'.".into())
                 }
                 
@@ -1607,256 +1937,8 @@ Two styles of help are provided:
         },
     );
 
-    commands.insert("vlan", Command {
-        name: "vlan",
-        description: "Define VLAN or VLAN Range",
-        suggestions: None,
-        suggestions1: None,
-        options: Some(vec!["<vlan-id>       - Enter the vlan-id"]),
-        execute: |args, context, _| {
-            if matches!(context.current_mode, Mode::ConfigMode | Mode::VlanMode) {
-                if args.is_empty() {
-                    return Err("Please specify a VLAN ID or VLAN range, e.g., 'vlan 5' or 'vlan range 10 - 20'.".into());
-                }
-    
-                let input = args.join(" ");
-                
-                if input.starts_with("range") {
-                    // Handle VLAN range
-                    let range_args = input.strip_prefix("range").unwrap().trim();
-                    let range_parts: Vec<&str> = range_args.split('-').map(|s| s.trim()).collect();
-    
-                    if range_parts.len() != 2 {
-                        return Err("Invalid range format. Use 'vlan range 10 - 20'.".into());
-                    }
-    
-                    // Validate the range
-                    let start: u16 = range_parts[0].parse().map_err(|_| "Invalid VLAN ID.")?;
-                    let end: u16 = range_parts[1].parse().map_err(|_| "Invalid VLAN ID.")?;
-                    
-                    if start < 2 || end > 4094 || start > end {
-                        return Err("VLAN range must be between 2 and 4094, and the start must be less than or equal to the end.".into());
-                    }
-    
-                    // Create the VLAN range
-                    context.current_mode = Mode::VlanMode;
-                    context.selected_vlan = Some(format!("{} - {}", start, end));
-                    context.prompt = format!("{}(config-vlan)#", context.config.hostname);
-                    println!("Entering VLAN Range configuration mode for VLANs: {} - {}", start, end);
-                    Ok(())
-                } else {
-                    // Handle single VLAN
-                    let vlan_args: Vec<&str> = input.split_whitespace().collect();
-                    let vlan_id: u16 = input.parse().map_err(|_| "Invalid VLAN ID.")?;
-    
-                    if vlan_id == 1 {
-                        return Err("VLAN 1 is the default VLAN and cannot be created.".into());
-                    }
-    
-                    if vlan_id < 2 || vlan_id > 4094 {
-                        return Err("VLAN ID must be between 2 and 4094.".into());
-                    }
 
-                    let vlan_name = if vlan_args.len() > 1 {
-                        vlan_args[1..].join(" ")
-                    } else {
-                        format!("VLAN{}", vlan_id) // Default name
-                    };
-    
-                    context.current_mode = Mode::VlanMode;
-                    context.selected_vlan = Some(vlan_id.to_string());
-                    context.prompt = format!("{}(config-vlan)#", context.config.hostname);
-                    context.vlan_names.get_or_insert_with(HashMap::new);
-                    println!("Entering VLAN configuration mode for VLAN ID: {}", vlan_id);
-                    
-                    if let Some(vlan_names) = &mut context.vlan_names {
-                        vlan_names.insert(vlan_id.to_string(), vlan_name.clone());
-                        println!("VLAN {} named: {}", vlan_id, vlan_name);
-                        Ok(())
-                    } else {
-                        Err("VLAN names are not initialized.".into())
-                    }
-                    
-                }
-            } else {
-                Err("The 'vlan' command is only available in Global Configuration mode and Vlan mode.".into())
-            }
-        },
-    });
-    
-    commands.insert("name", Command {
-        name: "name",
-        description: "Set VLAN name",
-        suggestions: None,
-        suggestions1: None,
-        options: Some(vec!["<vlan-name>     - Enter a name for the vlan"]),
-        execute: |args, context, _| {
-            if matches!(context.current_mode, Mode::VlanMode) {
-                context.vlan_names.get_or_insert_with(HashMap::new);
-                if let Some(vlan_id_str) = &context.selected_vlan {
-                    // Parse vlan_id as u16 from string
-                    let vlan_id: u16 = vlan_id_str.parse().map_err(|_| "Invalid VLAN ID.")?;
-    
-                    if args.is_empty() {
-                        let vlan_name = format!("VLAN{}", vlan_id);
-                    }
-                    let vlan_name = args.join(" ");
-                    
-                    if vlan_id == 1 {
-                        return Err("VLAN 1 cannot have its name changed.".into());
-                    }
-    
-                    // Access the HashMap inside Option and insert the VLAN name
-                    if let Some(vlan_names) = &mut context.vlan_names {
-                        vlan_names.insert(vlan_id.to_string(), vlan_name.clone());
-                        println!("VLAN {} named: {}", vlan_id, vlan_name);
-                        Ok(())
-                    } else {
-                        Err("VLAN names are not initialized.".into())
-                    }
-                } else {
-                    Err("Please enter a VLAN configuration mode first (e.g., 'vlan 5').".into())
-                }
-            } else {
-                Err("The 'name' command is only available in Vlan mode.".into())
-            }
-        },
-    });
-    
-    commands.insert("state", Command {
-        name: "state",
-        description: "Set VLAN state",
-        suggestions: None,
-        suggestions1: None,
-        options: Some(vec!["<vlan-state>       - Enter a valid state ('active', 'suspend')"]),
-        execute: |args, context, _| {
-            if matches!(context.current_mode, Mode::VlanMode) {
-                
-                context.vlan_states.get_or_insert_with(HashMap::new);
-                if let Some(vlan_id_str) = &context.selected_vlan {
-                    // Parse vlan_id as u16 from string
-                    let vlan_id: u16 = vlan_id_str.parse().map_err(|_| "Invalid VLAN ID.")?;
-    
-                    if args.is_empty() {
-                        return Err("Please specify the state for the VLAN (active or suspend).".into());
-                    }
-    
-                    let state = args[0].to_lowercase();
-                    if state != "active" && state != "suspend" {
-                        return Err("State must be 'active' or 'suspend'.".into());
-                    }
-    
-                    if vlan_id == 1 {
-                        return Err("VLAN 1 cannot be suspended.".into());
-                    }
-    
-                    // Access the HashMap inside Option and insert the VLAN state
-                    if let Some(vlan_states) = &mut context.vlan_states {
-                        vlan_states.insert(vlan_id, state.clone());
-                        println!("VLAN {} state set to: {}", vlan_id, state);
-                        Ok(())
-                    } else {
-                        Err("VLAN states are not initialized.".into())
-                    }
-                } else {
-                    Err("Please enter a VLAN configuration mode first (e.g., 'vlan 5').".into())
-                }
-            } else {
-                Err("The 'state' command is only available in Vlan mode.".into())
-            }
-        },
-    });
-
-    commands.insert("switchport", Command {
-        name: "switchport",
-        description: "Configure switchport settings on the interface",
-        suggestions: Some(vec!["mode", "trunk", "access", "nonegotiate", "port-security"]),
-        suggestions1: Some(vec!["mode", "trunk", "access", "nonegotiate", "port-security"]),
-        options: None,
-        execute: |args, context, _| {
-            if matches!(context.current_mode, Mode::InterfaceMode) {
-                if args.is_empty() {
-                    return Err("Please specify a switchport subcommand, e.g., 'switchport mode'.".into());
-                }
-    
-                match args[0].as_ref() {
-                    "mode" => {
-                        if args.len() < 2 {
-                            return Err("Usage: switchport mode [access | dynamic | trunk]".into());
-                        }
-                        match args[1].as_ref() {
-                            "access" => {
-                                println!("Switchport mode set to ACCESS.");
-                                context.switchport_mode = Some("access".to_string());
-                                Ok(())
-                            }
-                            "dynamic" => {
-                                println!("Switchport mode set to DYNAMIC.");
-                                context.switchport_mode = Some("dynamic".to_string());
-                                Ok(())
-                            }
-                            "trunk" => {
-                                println!("Switchport mode set to TRUNK.");
-                                context.switchport_mode = Some("trunk".to_string());
-                                Ok(())
-                            }
-                            _ => Err("Invalid mode. Use 'access', 'dynamic', or 'trunk'.".into()),
-                        }
-                    }
-                    "trunk" => {
-                        if args.len() < 2 {
-                            return Err("Usage: switchport trunk [encapsulation | native vlan | allowed vlan]".into());
-                        }
-                        match args[1].as_ref() {
-                            "encapsulation" => {
-                                if args.len() < 3 || args[2] != "dot1q" {
-                                    return Err("Usage: switchport trunk encapsulation dot1q".into());
-                                }
-                                println!("Trunk encapsulation set to DOT1Q.");
-                                context.trunk_encapsulation = Some("dot1q".to_string());
-                                Ok(())
-                            }
-                            "native" => {
-                                if args.len() < 4 || args[2] != "vlan" {
-                                    return Err("Usage: switchport trunk native vlan <vlan_id>".into());
-                                }
-                                let vlan_id: u16 = args[3].parse().map_err(|_| "Invalid VLAN ID.")?;
-                                println!("Native VLAN set to {}.", vlan_id);
-                                context.native_vlan = Some(vlan_id);
-                                Ok(())
-                            }
-                            "allowed" => {
-                                if args.len() < 4 || args[2] != "vlan" {
-                                    return Err("Usage: switchport trunk allowed vlan <vlan_id>".into());
-                                }
-                                let vlan_id: u16 = args[3].parse().map_err(|_| "Invalid VLAN ID.")?;
-                                println!("Allowed VLAN set to {}.", vlan_id);
-                                context.allowed_vlans.insert(vlan_id);
-                                Ok(())
-                            }
-                            _ => Err("Invalid trunk subcommand. Use 'encapsulation', 'native vlan', or 'allowed vlan'.".into()),
-                        }
-                    }
-                    "access" => {
-                        println!("Access mode characteristics set.");
-                        Ok(())
-                    }
-                    "nonegotiate" => {
-                        println!("Switchport set to NONEGOTIATE.");
-                        Ok(())
-                    }
-                    "port-security" => {
-                        println!("Port security configured.");
-                        Ok(())
-                    }
-                    _ => Err("Invalid switchport subcommand.".into()),
-                }
-            } else {
-                Err("The 'switchport' command is only available in Interface Configuration mode.".into())
-            }
-        },
-    });
-
+    // Routing commands 
 
     commands.insert("router", Command {
         name: "router",
@@ -2167,6 +2249,9 @@ Two styles of help are provided:
         },
     });
 
+
+    // Access-lists
+
     commands.insert("access-list", Command {
         name: "access-list",
         description: "Configure a standard numbered ACL",
@@ -2403,12 +2488,19 @@ Two styles of help are provided:
         },
     });
 
+
+    // Crypto commands 
+
     commands.insert("crypto", Command {
         name: "crypto",
         description: "Crypto configuration commands",
-        suggestions: Some(vec!["ipsec profile", "key"]),
-        suggestions1: Some(vec!["ipsec profile", "key"]),
-        options: Some(vec!["<Requirement>   - Enter 'generate' or 'zeroize' "]),
+        suggestions: Some(vec!["ipsec", "key", "certificate", "dynamic-map",
+            "engine accelerator", "ipsec security-association lifetime",
+            "ipsec transform-set", "map", "map local-address"]),
+        suggestions1: Some(vec!["ipsec", "key", "certificate", "dynamic-map",
+            "engine accelerator", "ipsec security-association lifetime",
+            "ipsec transform-set", "map", "map local-address"]),
+        options: None,
         execute: |args, context, _| {
             if !matches!(context.current_mode, Mode::ConfigMode) {
                 return Err("Crypto commands are only available in Config mode.".into());
@@ -2429,49 +2521,234 @@ Two styles of help are provided:
                         } else {
                             Err("Invalid arguments. Use 'crypto ipsec profile <profile-name>'.".into())
                         }
-                    } else {
-                        Err("Invalid ipsec subcommand. Use 'crypto ipsec profile <profile-name>'.".into())
+                    } else if args[1] == "security-association" {
+                        if args.len() < 5 || args[2] != "lifetime" {
+                            return Err("Usage: crypto ipsec security-association lifetime {seconds <seconds> | kilobytes <kilobytes>}".into());
+                        }
+                        match args[3] {
+                            "seconds" => {
+                                let seconds = args[4].parse::<u32>()
+                                    .map_err(|_| "Invalid seconds value")?;
+                                context.config.crypto_ipsec_lifetime.seconds = Some(seconds);
+                                println!("IPSec security association lifetime set to {} seconds", seconds);
+                                Ok(())
+                            },
+                            "kilobytes" => {
+                                let kilobytes = args[4].parse::<u32>()
+                                    .map_err(|_| "Invalid kilobytes value")?;
+                                context.config.crypto_ipsec_lifetime.kilobytes = Some(kilobytes);
+                                println!("IPSec security association lifetime set to {} kilobytes", kilobytes);
+                                Ok(())
+                            },
+                            _ => return Err("Invalid lifetime parameter. Use 'seconds' or 'kilobytes'.".into())
+                        }
+                    } else if args[1] == "transform-set" {
+                        if args.len() < 4 {
+                            return Err("Usage: crypto ipsec transform-set <transform-set-name> <transform1> [transform2] [transform3]".into());
+                        }
+                        let name = args[2].to_string();
+                        let transforms: Vec<String> = args[3..].iter().map(|&s| s.to_string()).collect();
+                        context.config.crypto_transform_sets.insert(name.clone(), transforms.clone());
+                        println!("Created transform set '{}' with transforms: {}", 
+                            name, transforms.join(", "));
+                        Ok(())
+                    }
+                    else {
+                        Err("Invalid ipsec subcommand. Use 'crypto ipsec profile <profile-name>' or 'crypto ipsec security-association lifetime <s/kb>'.".into())
                     }
                 },
                 "key" => {
                     if args.len() < 2 {
-                        return Err("Subcommand required. Use 'generate rsa' to create RSA keys, or 'zeroize' to delete keys.".into());
+                        return Err("Subcommand required. Use 'generate' to create keys, or 'zeroize' to delete keys.".into());
                     }
     
                     match &args[1][..] {
                         "generate" => {
-                            if args.len() > 2 && args[2] == "rsa" {
-                                // RSA key generation logic
-                                println!("Enter key modulus size (default is 512 bits):");
-                                let modulus_size = 512;
+                            if args.len() > 2 && (args[2] == "rsa" || args[2] == "dsa") {
+                                let key_type = args[2];
+                                println!("Enter key size (default is 2048 bits):");
+                                let key_size = 2048; // In production, get this from user input
+                                
                                 let domain_name = context.config.domain_name.clone();
-    
                                 let key_name = format!("{}.{}", 
                                     context.config.hostname, 
                                     domain_name.unwrap_or("default_domain".to_string())
                                 );
+    
                                 println!("The name for the keys will be: {}", key_name);
-                                println!("Generating {}-bit RSA keys, keys will be non-exportable...", modulus_size);
-                                // Add logic here to generate the RSA keys.
-                                println!("[OK] RSA keys generated successfully.");
-                                Ok(())
+                                println!("Generating {}-bit {} keys, keys will be non-exportable...", key_size, key_type.to_uppercase());
+    
+                                // Simulate key generation
+                                match generate_crypto_key(&key_name, key_type, key_size) {
+                                    Ok(key_data) => {
+                                        // Store the generated key in context
+                                        context.config.crypto_keys.insert(key_name.clone(), key_data);
+                                        println!("[OK] {} keys generated successfully.", key_type.to_uppercase());
+                                        Ok(())
+                                    },
+                                    Err(e) => Err(format!("Failed to generate keys: {}", e))
+                                }
                             } else {
-                                Err("Invalid generate command. Use 'crypto key generate rsa'.".into())
+                                Err("Invalid generate command. Use 'crypto key generate <rsa|dsa>'.".into())
                             }
                         },
                         "zeroize" => {
-                            if args.len() > 2 && args[2] == "rsa" {
-                                let key_name = args[2].to_string();
-                                println!("Deleting keys with the name: {}", key_name);
-                                println!("[OK] Keys deleted successfully.");
-                                Ok(())
+                            if args.len() > 2 && (args[2] == "rsa" || args[2] == "dsa") {
+                                let key_type = args[2];
+                                let domain_name = context.config.domain_name.clone();
+                                let key_name = format!("{}.{}", 
+                                    context.config.hostname, 
+                                    domain_name.unwrap_or("default_domain".to_string())
+                                );
+    
+                                match delete_crypto_key(&key_name) {
+                                    Ok(_) => {
+                                        // Remove the key from context
+                                        context.config.crypto_keys.remove(&key_name);
+                                        println!("[OK] {} keys deleted successfully.", key_type.to_uppercase());
+                                        Ok(())
+                                    },
+                                    Err(e) => Err(format!("Failed to delete keys: {}", e))
+                                }
                             } else {
-                                Err("Invalid zeroize command. Use 'crypto key zeroize rsa'.".into())
+                                Err("Invalid zeroize command. Use 'crypto key zeroize <rsa|dsa>'.".into())
+                            }
+                        },
+                        "import" => {
+                            if args.len() > 2 && (args[2] == "rsa" || args[2] == "dsa") {
+                                let key_type = args[2];
+                                println!("Enter the key data (paste the key content, end with a blank line):");
+                                
+                                // In production, implement actual key import logic
+                                match import_crypto_key(key_type) {
+                                    Ok(key_data) => {
+                                        let key_name = format!("imported_{}", key_type);
+                                        context.config.crypto_keys.insert(key_name.clone(), key_data);
+                                        println!("[OK] {} key imported successfully.", key_type.to_uppercase());
+                                        Ok(())
+                                    },
+                                    Err(e) => Err(format!("Failed to import key: {}", e))
+                                }
+                            } else {
+                                Err("Invalid import command. Use 'crypto key import <rsa|dsa>'.".into())
                             }
                         },
                         _ => Err("Invalid key subcommand. Available subcommands: 'generate rsa', 'zeroize rsa'.".into())
                     }
                 },
+                "certificate" => {
+                    if args.len() < 2 {
+                        return Err("Subcommand required. Use 'generate' to create keys, or 'zeroize' to delete certificates.".into());
+                    }
+    
+                    match &args[1][..] {
+                        "generate" => {
+                            if args.len() < 3 {
+                                return Err("Certificate name required. Use 'crypto certificate generate <name>'.".into());
+                            }
+                            let cert_name = &args[2];
+                            
+                            match generate_self_signed_certificate(cert_name, &context.config) {
+                                Ok(cert_data) => {
+                                    context.config.certificates.insert(cert_name.to_string(), cert_data);
+                                    println!("[OK] Self-signed certificate '{}' generated successfully.", cert_name);
+                                    Ok(())
+                                },
+                                Err(e) => Err(format!("Failed to generate certificate: {}", e))
+                            }
+                        },
+                        "request" => {
+                            if args.len() < 3 {
+                                return Err("Certificate name required. Use 'crypto certificate request <name>'.".into());
+                            }
+                            let cert_name = &args[2];
+                            
+                            match generate_certificate_request(cert_name, &context.config) {
+                                Ok(csr_data) => {
+                                    println!("Certificate signing request for '{}' generated:", cert_name);
+                                    println!("{}", csr_data);
+                                    Ok(())
+                                },
+                                Err(e) => Err(format!("Failed to generate CSR: {}", e))
+                            }
+                        },
+                        "import" => {
+                            if args.len() < 3 {
+                                return Err("Certificate name required. Use 'crypto certificate import <name>'.".into());
+                            }
+                            let cert_name = &args[2];
+                            
+                            println!("Enter the certificate data (paste the certificate content, end with a blank line):");
+                            match import_certificate(cert_name) {
+                                Ok(cert_data) => {
+                                    context.config.certificates.insert(cert_name.to_string(), cert_data);
+                                    println!("[OK] Certificate '{}' imported successfully.", cert_name);
+                                    Ok(())
+                                },
+                                Err(e) => Err(format!("Failed to import certificate: {}", e))
+                            }
+                        },
+                        _ => Err("Invalid key subcommand. Available subcommands: 'generate rsa', 'zeroize rsa'.".into())
+                    }
+                },
+                "dynamic-map" => {
+                    if args.len() < 3 {
+                        return Err("Usage: crypto dynamic-map <dynamic-map-name> <dynamic-seq-num>".into());
+                    }
+                    let name = args[1].to_string();
+                    let seq_num = args[2].parse::<u32>()
+                        .map_err(|_| "Invalid sequence number")?;
+                    
+                    let entry = DynamicMapEntry {
+                        name: name.clone(),
+                        seq_num,
+                    };
+                    context.config.crypto_dynamic_maps.insert(name.clone(), entry);
+                    println!("Created dynamic map entry '{}' with sequence number {}", name, seq_num);
+                    Ok(())
+                },
+                "engine" => {
+                    if args.get(1) != Some(&"accelerator") {
+                        return Err("Usage: crypto engine accelerator [slot]".into());
+                    }
+                    let slot = if args.len() > 2 {
+                        Some(args[2].parse::<u32>()
+                            .map_err(|_| "Invalid slot number")?)
+                    } else {
+                        None
+                    };
+                    context.config.crypto_engine_accelerator = slot;
+                    println!("IPSec accelerator {} configured", 
+                        slot.map_or("default".to_string(), |s| s.to_string()));
+                    Ok(())
+                },
+                "map" => {
+                    if args.len() < 3 {
+                        return Err("Usage: crypto map <map-name> <seq-num> ipsec-manual".into());
+                    }
+                    let name = args[1].to_string();
+                    let seq_num = args[2].parse::<u32>()
+                        .map_err(|_| "Invalid sequence number")?;
+    
+                    if args.get(3) == Some(&"local-address") {
+                        if args.len() < 5 {
+                            return Err("Usage: crypto map <map-name> <seq-num> local-address <interface-id>".into());
+                        }
+                        let interface_id = args[4].to_string();
+                        context.config.crypto_local_addresses.insert(name.clone(), interface_id.clone());
+                        println!("Set local address interface '{}' for crypto map '{}'", interface_id, name);
+                    } else {
+                        let entry = CryptoMapEntry {
+                            name: name.clone(),
+                            seq_num,
+                            interface_id: None,
+                        };
+                        context.config.crypto_maps.insert(name.clone(), entry);
+                        println!("Created crypto map entry '{}' with sequence number {}", name, seq_num);
+                    }
+                    Ok(())
+                },
+
                 _ => Err("Invalid crypto subcommand. Available subcommands: 'ipsec profile', 'key'.".into())
             }
         }
@@ -2497,7 +2774,46 @@ Two styles of help are provided:
             }
         },
     });
+
+    commands.insert("service", Command {
+        name: "service password-encryption",
+        description: "Enable password encryption",
+        suggestions: Some(vec!["password-encryption"]),
+        suggestions1: Some(vec!["password-encryption"]),
+        options: None,
+        execute: |args, context, _| {
+            if matches!(context.current_mode, Mode::ConfigMode) {
+                if args.len() == 1 && args[0] == "password-encryption" {
+                    let storage = PASSWORD_STORAGE.lock().unwrap();
+                    
+                    let stored_password = storage.enable_password.clone();
+                    let stored_secret = storage.enable_secret.clone();
+                    drop(storage);
+                    
+                    if let Some(password) = stored_password {
+                        let encrypted_password = encrypt_password(&password);
+                        context.config.encrypted_password = Some(encrypted_password);
+                    }
+                    
+                    if let Some(secret) = stored_secret {
+                        let encrypted_secret = encrypt_password(&secret);
+                        context.config.encrypted_secret = Some(encrypted_secret);  // Update encrypted secret
+                    }
+        
+                    context.config.password_encryption = true;
+                    println!("Password encryption enabled.");
+                    Ok(())
+                } else {
+                    Err("Invalid arguments provided to 'service password-encryption'. This command does not accept additional arguments.".into())
+                }
+            } else {
+                Err("The 'service password-encryption' command is only available in Privileged EXEC mode.".into())
+            }
+        },
+    });
     
+
+    // tunneling commands 
 
     commands.insert("tunnel", Command {
         name: "tunnel",
@@ -2589,175 +2905,6 @@ Two styles of help are provided:
         },
     });
     
-    
-    commands.insert("ntp", Command {
-        name: "ntp",
-        description: "NTP configuration commands",
-        suggestions: Some(vec!["server", "master", "authenticate", "authentication-key", "trusted-key"]),
-        suggestions1: Some(vec!["server", "master", "authenticate", "authentication-key", "trusted-key"]),
-        options: None,
-        execute: |args, context, _| {
-            if !matches!(context.current_mode, Mode::ConfigMode) {
-                return Err("NTP commands are only available in configuration mode.".into());
-            }
-    
-            if args.is_empty() {
-                return Err("Subcommand required. Available subcommands: server, master, authenticate, authentication-key, trusted-key".into());
-            }
-    
-            match &args[0][..] {
-                "server" => {
-                    if args.len() == 2 {
-                        let ip_address = args[1].to_string();
-                        if ip_address.parse::<Ipv4Addr>().is_ok() {
-                            context.ntp_servers.insert(ip_address.clone());
-                            // Assuming once the server is configured, we add it to NTP associations
-                            let association = NtpAssociation {
-                                address: ip_address.clone(),
-                                ref_clock: ".INIT.".to_string(),
-                                st: 16,
-                                when: "-".to_string(),
-                                poll: 64,
-                                reach: 0,
-                                delay: 0.0,
-                                offset: 0.0,
-                                disp: 0.01,
-                            };
-                            context.ntp_associations.push(association); // Adding the new server to the list
-                            println!("NTP server {} configured.", ip_address);
-                            Ok(())
-                        } else {
-                            Err("Invalid IP address format.".into())
-                        }
-                    } else {
-                        Err("Invalid arguments. Usage: ntp server {ip-address}".into())
-                    }
-                },
-                "master" => {
-                    context.ntp_master = true;
-                    println!("Device configured as NTP master.");
-                    Ok(())
-                },
-                "authenticate" => {
-                    if args.len() == 1 {
-                        context.ntp_authentication_enabled = !context.ntp_authentication_enabled;
-                        let status = if context.ntp_authentication_enabled {
-                            "enabled"
-                        } else {
-                            "disabled"
-                        };
-                        println!("NTP authentication {}", status);
-                        Ok(())
-                    } else {
-                        Err("Invalid arguments. Use 'ntp authenticate'.".into())
-                    }
-                },
-                "authentication-key" => {
-                    if args.len() == 4 && args[2] == "md5" {
-                        if let Ok(key_number) = args[1].parse::<u32>() {
-                            let md5_key = args[3].to_string();
-                            context.ntp_authentication_keys.insert(key_number, md5_key.clone());
-                            println!("NTP authentication key {} configured with MD5 key: {}", key_number, md5_key);
-                            Ok(())
-                        } else {
-                            Err("Invalid key number. Must be a positive integer.".into())
-                        }
-                    } else {
-                        Err("Invalid arguments. Use 'ntp authentication-key <key-number> md5 <key-value>'.".into())
-                    }
-                },
-                "trusted-key" => {
-                    if args.len() == 2 {
-                        if let Ok(key_number) = args[1].parse::<u32>() {
-                            context.ntp_trusted_keys.insert(key_number);
-                            println!("NTP trusted key {} configured.", key_number);
-                            Ok(())
-                        } else {
-                            Err("Invalid key number. Must be a positive integer.".into())
-                        }
-                    } else {
-                        Err("Invalid arguments. Use 'ntp trusted-key <key-number>'.".into())
-                    }
-                },
-                _ => Err("Invalid NTP subcommand. Available subcommands: server, master, authenticate, authentication-key, trusted-key".into())
-            }
-        }
-    });
-  
-    commands.insert("service", Command {
-        name: "service password-encryption",
-        description: "Enable password encryption",
-        suggestions: Some(vec!["password-encryption"]),
-        suggestions1: Some(vec!["password-encryption"]),
-        options: None,
-        execute: |args, context, _| {
-            if matches!(context.current_mode, Mode::ConfigMode) {
-                if args.len() == 1 && args[0] == "password-encryption" {
-                    let storage = PASSWORD_STORAGE.lock().unwrap();
-                    
-                    let stored_password = storage.enable_password.clone();
-                    let stored_secret = storage.enable_secret.clone();
-                    drop(storage);
-                    
-                    if let Some(password) = stored_password {
-                        let encrypted_password = encrypt_password(&password);
-                        context.config.encrypted_password = Some(encrypted_password);
-                    }
-                    
-                    if let Some(secret) = stored_secret {
-                        let encrypted_secret = encrypt_password(&secret);
-                        context.config.encrypted_secret = Some(encrypted_secret);  // Update encrypted secret
-                    }
-        
-                    context.config.password_encryption = true;
-                    println!("Password encryption enabled.");
-                    Ok(())
-                } else {
-                    Err("Invalid arguments provided to 'service password-encryption'. This command does not accept additional arguments.".into())
-                }
-            } else {
-                Err("The 'service password-encryption' command is only available in Privileged EXEC mode.".into())
-            }
-        },
-    });
-
-    commands.insert("ping", Command {
-        name: "ping",
-        description: "Ping a specific IP address to check reachability",
-        suggestions: None,
-        suggestions1: None,
-        options: Some(vec!["<ip-address>    - Enter the ip-address"]),
-        execute: |args, _context, _| {
-            if args.len() == 1 {
-                let ip: String = args[0].to_string();
-                let route_table = ROUTE_TABLE.lock().unwrap();
-    
-                if route_table.contains_key(&ip) {
-                    println!("Pinging {} with 32 bytes of data:", ip);
-                    for _ in 0..4 {
-                        println!("Reply from {}: bytes=32 time<1ms TTL=128", ip);
-                    }
-                    println!("\nPing statistics for {}:", ip);
-                    println!("    Packets: Sent = 4, Received = 4, Lost = 0 (0% loss),");
-                    println!("Approximate round trip times in milli-seconds:");
-                    println!("    Minimum = 0ms, Maximum = 1ms, Average = 0ms");
-                    Ok(())
-                } else {
-                    println!("Pinging {} with 32 bytes of data:", ip);
-                    for _ in 0..4 {
-                        println!("Request timed out.");
-                    }
-                    println!("\nPing statistics for {}:", ip);
-                    println!("    Packets: Sent = 4, Received = 0, Lost = 4 (100% loss),");
-                    Err(format!("IP address {} is not reachable.", ip).into())
-                }
-            } else {
-                Err("Invalid syntax. Usage: ping <ip>".into())
-            }
-        },
-    });
-    
-
 
     commands
 }

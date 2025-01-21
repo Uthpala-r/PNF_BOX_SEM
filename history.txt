@@ -2,3 +2,76 @@
 en
 configure terminal
 exit cli
+en
+conf t
+crypto ipsec profile Hi
+crypto key generate rsa
+crypto certificate generate crypto
+exit cli
+en
+show crypto key
+conf t
+crypto key generate dsa
+exit
+show crypto key
+conf t
+crypto certificate generate
+crypto certificate generate CRYPTO
+exit
+show crypto certificate
+exit cli
+en
+conf t
+crypto ipsec
+crypto ipsec profile
+crypto ipsec profile Hi
+crypto ipsec security-association lifetime
+crypto ipsec security-association lifetime seconds 5
+crypto ipsec security-association lifetime kilobytes 7
+crypto ipsec transform-set
+crypto ipsec transform-set Hi transform1
+crypto dynamic-map Crypto 5
+crypto engine accelerator 7
+crypto map Name 9 ipsec-manual
+crypto map Name 9 ipsec-man
+crypto map Namel local-address f0/0
+exit
+show crypto key
+show crypto certifucate
+show crypto certificate
+exit cli
+en
+cponf t
+conf t
+crypto map Name1 3 local-address 67
+crypto map Name1 3 ipsec-manual
+exit cli
+en
+conf t
+crypto dynamic-map Name
+crypto dynamic-map Name 5
+crypto map Name
+crypto map Name 67 ipsec-manual
+crypto map Name 67 loca;-address 86
+crypto engine accelerator
+exit
+show crypto dynamic-map
+show crypto map
+show crypto engine
+conf t
+no crypto dynamic-map
+no crypto dynamic-map Name1
+no crypto dynamic-map Name
+exit
+show crypto dynamic-map
+conf t
+no crypto engine
+no crypto engine accelerator
+exit
+show crypto engine
+conf t
+no crypto  map
+no crypto  map Name
+exit
+show crypto  map
+exit cli
