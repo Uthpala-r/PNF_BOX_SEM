@@ -1,0 +1,4 @@
+#V2
+enable
+conf t
+exit cli

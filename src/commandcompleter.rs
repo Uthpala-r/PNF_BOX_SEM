@@ -2,6 +2,7 @@
 use crate::build_command_registry;
 use crate::execute::Mode;
 use crate::execute::Command;
+use crate::dynamic_registry::{get_registered_commands, get_mode_commands_FNC, DYNAMIC_COMMANDS};
 
 use rustyline::hint::Hinter;
 use rustyline::Helper;
@@ -58,6 +59,15 @@ impl CommandCompleter {
             commands,
             current_mode,
         }
+    }
+
+    pub fn refresh_completions(&mut self) -> Result<(), String> {
+        if let Ok(commands) = get_registered_commands() {
+            for command in commands.keys() {
+                self.commands.insert(command.to_string(), vec![command.to_string()]);
+            }
+        }
+        Ok(())
     }
 
 }
@@ -208,6 +218,7 @@ fn is_command_allowed_in_mode(command: &String, mode: &Mode) -> bool {
         Mode::PrivilegedMode => matches!(command.as_str(), "configure" | "reload" | "debug" | "undebug" | "exit" | "clear" | "help" | "write" | "copy" | "clock" | "clear" | "ping" | "show" | "ifconfig"),
         Mode::ConfigMode => matches!(command.as_str(), "hostname" | "reload" | "interface" | "ip" | "no" | "exit" | "clear" | "tunnel" | "virtual-template" | "help" | "write" | "ping" | "vlan" | "access-list" | "router" | "enable" | "service" | "set" | "ifconfig" | "ntp" | "crypto"),
         Mode::InterfaceMode => matches!(command.as_str(), "exit" | "reload" | "shutdown" | "no" | "switchport" | "clear" | "help" | "write" | "interface" | "ip"), 
+        Mode::CryptoUserMode => matches!(command.as_str(), "exit"),
         Mode::VlanMode => matches!(command.as_str(), "name" | "exit" | "reload" | "clear" | "help" | "state" | "vlan"),
         Mode::RouterConfigMode => matches!(command.as_str(), "network" | "reload" | "exit" | "clear" | "help" | "neighbor" | "area" | "passive-interface" | "distance" | "default-information" | "router-id"),
         Mode::ConfigStdNaclMode(_) => matches!(command.as_str(), "deny" | "permit" | "reload" | "help" | "exit" | "clear" | "ip"),

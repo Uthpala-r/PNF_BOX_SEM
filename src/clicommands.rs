@@ -225,8 +225,8 @@ pub fn build_command_registry() -> HashMap<&'static str, Command> {
     commands.insert("configure", Command {
         name: "configure terminal",
         description: "Enter global configuration mode",
-        suggestions: Some(vec!["terminal"]),
-        suggestions1: Some(vec!["terminal"]),
+        suggestions: Some(vec!["terminal", "user"]),
+        suggestions1: Some(vec!["terminal", "user"]),
         options: None,
         execute: |args, context, _| {
             if matches!(context.current_mode, Mode::PrivilegedMode) {
@@ -235,8 +235,14 @@ pub fn build_command_registry() -> HashMap<&'static str, Command> {
                     context.prompt = format!("{}(config)#", context.config.hostname);
                     println!("Enter configuration commands, one per line.  End with CNTL/Z");
                     Ok(())
-                } else {
-                    Err("Invalid arguments provided to 'configure terminal'. This command does not accept additional arguments.".into())
+                } else if args.len() == 1 && args[0] == "user" {
+                    context.current_mode = Mode::CryptoUserMode;
+                    context.prompt = format!("{}(user)#", context.config.hostname);
+                    println!("Enter configuration commands, one per line.  End with CNTL/Z");
+                    Ok(())
+                }   
+                else {
+                    Err("Invalid arguments provided to 'configure'. This command does not accept additional arguments.".into())
                 }
             } else {
                 Err("The 'configure terminal' command is only available in Privileged EXEC mode.".into())
@@ -322,7 +328,7 @@ pub fn build_command_registry() -> HashMap<&'static str, Command> {
                     Mode::RouterConfigMode => {
                         context.current_mode = Mode::ConfigMode;
                         context.prompt = format!("{}(config)#", context.config.hostname);
-                        println!("Exiting Router Configuration Mode Mode...");
+                        println!("Exiting Router Configuration Mode...");
                         Ok(())
                     }
                     Mode::ConfigStdNaclMode(_) => {
@@ -341,6 +347,12 @@ pub fn build_command_registry() -> HashMap<&'static str, Command> {
                         context.current_mode = Mode::PrivilegedMode;
                         context.prompt = format!("{}#", context.config.hostname);
                         println!("Exiting Global Configuration Mode...");
+                        Ok(())
+                    }
+                    Mode::CryptoUserMode => {
+                        context.current_mode = Mode::PrivilegedMode;
+                        context.prompt = format!("{}#", context.config.hostname);
+                        println!("Exiting User Configuration Mode...");
                         Ok(())
                     }
                     Mode::PrivilegedMode => {
@@ -674,6 +686,13 @@ Two styles of help are provided:
                     println!("clear             - Clear the terminal");
                     println!("debug             - Debug the availbale processes");
                     println!("undebug           - Undebug the availbale processes");
+                }
+                else if matches!(context.current_mode, Mode::ConfigMode) {
+                    println!("exit              - Exit to user mode");
+                    println!("help              - Display available commands");
+                    println!("reload            - Reload the system");
+                    println!("clear             - Clear the terminal");
+                    println!("user              - Add or remove users");
                 }
                 else if matches!(context.current_mode, Mode::ConfigMode) {
                     println!("hostname          - Set system hostname");

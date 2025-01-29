@@ -75,3 +75,23 @@ no crypto  map Name
 exit
 show crypto  map
 exit cli
+en
+conf t
+int g0/0
+host R1
+exit cli
+en
+conf t
+int g0/0
+host W2
+exit
+crypto
+conf t
+crypto
+crypto key generate
+crypto key generate rsa
+config user
+exit
+config user
+hello
+exit cli
